@@ -1,0 +1,1 @@
+ActionController::Base.instance_eval { include Azimux::MultimodelTransactions::ActionController }

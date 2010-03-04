@@ -3,59 +3,60 @@ module Azimux
     module ActionController
       protected
       def ax_multimodel_transaction objects, options = {}, &block
-        already_in = options[:already_in]
-        connections = []
+        reraise = options[:reraise]
 
-        if already_in
-          already_in = [already_in] unless already_in.is_a? Array
+        begin
+          already_in = options[:already_in]
+          connections = []
 
-          already_in.each do |object|
-            connection = object
-            if object.is_a? ActiveRecord::Base
-              connection = object.connection
-            elsif object.is_a?(Class) && object.ancestors.include?(ActiveRecord::Base)
-              connection = object.connection
+          if already_in
+            already_in = [already_in] unless already_in.is_a? Array
+
+            already_in.each do |object|
+              connection = object
+              if object.is_a? ActiveRecord::Base
+                connection = object.connection
+              elsif object.is_a?(Class) && object.ancestors.include?(ActiveRecord::Base)
+                connection = object.connection
+              end
+
+              connections << connection unless connections.include? connection
             end
-
-            connections << connection unless connections.include? connection
           end
-        end
 
-        objects = objects.map do |object|
-          if object.is_a?(Class)
-            object
-          else
-            object.class
+          objects = objects.map do |object|
+            if object.is_a?(Class)
+              object
+            else
+              object.class
+            end
           end
-        end
 
-        objects.reverse.inject(block) do |proc_object, klass|
-          if connections.include? klass.connection
-            proc_object
-          else
-            connections << klass.connection
+          objects.reverse.inject(block) do |proc_object, klass|
+            if connections.include? klass.connection
+              proc_object
+            else
+              connections << klass.connection
 
-            proc do
-              klass.transaction do
-                proc_object.call
+              proc do
+                klass.transaction do
+                  proc_object.call
+                end
               end
             end
-          end
-        end.call
+          end.call
+
+        rescue Azimux::MultimodelTransactions::Rollback
+          raise if reraise
+          raise ActiveRecord::Rollback if already_in
+        end
       end
 
       def ax_multimodel_if(models, options = {})
         if_proc = options[:if]
         is_true = options[:is_true]
         is_false = options[:is_false]
-        reraise = options[:reraise]
         retval = nil
-
-        rollback_transaction = if options.keys.include? :rollback_transaction
-          options[:rollback_transaction]
-        else
-          true
-        end
 
         if models.blank?
           raise "ax_multimodel_if must be called with options[:models] set to an array of the models involved"
@@ -69,7 +70,7 @@ module Azimux
           if if_proc.call
             retval = is_true.call if is_true
           else
-            raise Azimux::MultimodelTransactions::UncheckedRollbackException
+            raise Azimux::MultimodelTransactions::Rollback
           end
         end
 
@@ -81,18 +82,12 @@ module Azimux
               end
             end
           end.call
-        rescue Azimux::MultimodelTransactions::UncheckedRollbackException
+        rescue Azimux::MultimodelTransactions::Rollback
           retval = if is_false
             is_false.call
           else
             false
           end
-
-          if rollback_transaction
-            models.map(&:class).map(&:connection).uniq.map(&:rollback_db_transaction)
-          end
-
-          raise if reraise
         end
 
         retval
@@ -103,5 +98,5 @@ module Azimux
   end
 end
 
-class Azimux::MultimodelTransactions::UncheckedRollbackException < Exception
+class Azimux::MultimodelTransactions::Rollback < Exception
 end
